@@ -1,0 +1,176 @@
+package com.riskmetrics.apollo.vanilla.proposal.thumbnail;
+
+import java.awt.image.BufferedImage;
+import java.awt.image.ColorModel;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
+
+import javax.imageio.ImageIO;
+
+import org.apache.xerces.impl.dv.util.Base64;
+import org.faceless.pdf2.AnnotationLink;
+import org.faceless.pdf2.PDF;
+import org.faceless.pdf2.PDFAnnotation;
+import org.faceless.pdf2.PDFPage;
+import org.faceless.pdf2.PDFParser;
+import org.faceless.pdf2.PDFReader;
+import org.faceless.pdf2.PageExtractor;
+import org.faceless.pdf2.PagePainter;
+import org.faceless.report.ReportParser;
+
+import com.riskmetrics.core.log.Log;
+import com.riskmetrics.windward.utils.StreamUtilities;
+
+import com.riskmetrics.apollo.vanilla.proposal.reporting.ImageFromPDF;
+import com.riskmetrics.apollo.vanilla.proposal.reporting.PDFReportManager;
+
+/**
+ * Client of generating thumbnail.
+ * 
+ * @author stanley huang
+ */
+public class ThumbnailClient {
+
+    private static final Log log = Log.getLog(ThumbnailClient.class);
+
+    private static  String m_reportDefinitionID;
+
+    public ThumbnailClient(final String p_reportDefinitionID){
+        m_reportDefinitionID = p_reportDefinitionID;
+    }
+
+    /**
+     * 
+     * Convert to thumbnail list.
+     * @param PDFBytes
+     * @return
+     * @throws IOException
+     */
+    public List<Thumbnail> convert(byte[] PDFBytes) throws IOException{
+        List<Thumbnail> result = new ArrayList<Thumbnail>();
+        ReportParser.setLicenseKey(PDFReportManager.getBFOViewer_LicenseKey());
+        PDF pdf = new PDF(new PDFReader(new ByteArrayInputStream(PDFBytes)));
+        PDFParser parser = new PDFParser(pdf);
+        ColorModel cm = PDFParser.RGB;
+        int dpi = 75;
+        for (int i = 0; i < pdf.getNumberOfPages(); i++) {
+            String pageID = "page" + i + ".png";
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            try {
+                PDFPage page = pdf.getPage(i);
+                List<PDFAnnotation> annots = page.getAnnotations();
+                for (PDFAnnotation annotation : annots) {
+                    if (annotation instanceof AnnotationLink) {
+                        pageID = ((AnnotationLink) annotation).getAction().getType().split(":")[1];
+                    }
+                }
+            } catch (Exception e) {
+                throw new RuntimeException("PDF convert to thumbnail error");
+            }
+            PagePainter painter = parser.getPagePainter(i);
+            BufferedImage image = painter.getImage(dpi, cm);
+            ImageIO.write(image, "PNG", baos);
+            if(pageID.contains("_0")){
+                pageID = pageID.replace("_0", "");
+            }
+            Thumbnail thumbnail = new Thumbnail(pageID, m_reportDefinitionID, baos.toByteArray());
+            result.add(thumbnail);
+            baos.close();
+        }
+        return result;
+    }
+
+    /**
+     * 
+     * Get thumbnail list from database.
+     * @return
+     */
+    public List<Thumbnail> getThumbnailFromDatabase(){
+        // to-do
+        return null;
+    }
+
+    /**
+     * 
+     * Get thumbnail list from temp directory.
+     * @return
+     */
+    public List<byte[]> getThumbnailFromDir(String pageId, File tmpDir){
+        File rootFile = tmpDir;
+        List<byte[]> list = null;
+        if(rootFile.exists() && rootFile.isDirectory()){
+            try {
+                File[] tmps = rootFile.listFiles();
+                list = new ArrayList<byte[]>(tmps.length);
+                for(File f : tmps){
+                    if(f.isFile() && f.getName().startsWith(pageId)){
+                        BufferedImage bi = ImageIO.read(f);
+                        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                        ImageIO.write(bi, "PNG", baos);
+                        list.add(baos.toByteArray());
+                    }
+                }
+            } catch (IOException e) {
+                throw new RuntimeException("Convert thumbnail to byte array error!");
+            }
+        }else{
+            throw new RuntimeException("Thumbnail temp directory are not exist");
+        }
+        return list;
+    }
+
+    /**
+     * 
+     * Store data into databases.
+     * @param list
+     */
+    public void storeIntoDatabase(List<Thumbnail> list){
+        for(int i = 0; i < list.size(); i++){
+            Thumbnail thumbnail = list.get(i);
+            System.out.println(thumbnail.toString());
+        }
+    }
+
+    public void createTemp(List<Thumbnail> list, File tmpDir){
+        try {
+            File newTmp = null;
+            Set<String> nameUsed = new HashSet<String>(list.size());
+            String imgName = "";
+            int index = 1;
+            for(int i=0; i<list.size(); i++){
+                Thumbnail thumbnail = list.get(i);
+                byte[] imageBytes = thumbnail.getImageBytes();
+                String pageId = thumbnail.getPageId();
+                ByteArrayInputStream in = new ByteArrayInputStream(imageBytes);
+                BufferedImage bufferedImg = ImageIO.read(in);
+                if(nameUsed.contains(pageId)){
+                    imgName = pageId + index + ".png";
+                    index++;
+                }else{
+                    index = 1;
+                    imgName = pageId + ".png";
+                    newTmp = new File(tmpDir + File.separator + pageId);
+                    if(!newTmp.exists())
+                        newTmp.mkdir();
+                    nameUsed.add(pageId);
+                }
+                ImageIO.write(bufferedImg, "PNG", new File(newTmp + File.separator + imgName));
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("Create temp file error." + e);
+        }
+    }
+
+
+}
